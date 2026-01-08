@@ -13,7 +13,7 @@ A Django-based logistics and scheduling platform for managing locomotives, wagon
 - Python 3.8+
 - pip (Python package manager)
 - (Recommended) Virtual environment tool: `venv` or `virtualenv`
-- SQLite (default, no setup needed) or your preferred database
+- PostgreSQL 12+ (with database created and credentials ready)
 
 ## Setup Instructions
 
@@ -58,19 +58,24 @@ The app will be available at http://127.0.0.1:8000/
 
 ## Database Connection Strings
 
-By default, the app uses SQLite (`db.sqlite3`). To use another database (e.g., PostgreSQL, MySQL), update the `DATABASES` setting in `mobility/settings.py`:
+The app uses PostgreSQL as its primary database. Update the `DATABASES` setting in `mobility/settings.py` with your PostgreSQL credentials:
 
-```
+```python
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.postgresql',  # or 'django.db.backends.mysql', etc.
-        'NAME': 'your_db_name',
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'trans_mobility_db',  # Your database name
         'USER': 'your_db_user',
         'PASSWORD': 'your_db_password',
         'HOST': 'localhost',
         'PORT': '5432',  # Default PostgreSQL port
     }
 }
+```
+
+**Note:** Ensure you have the PostgreSQL adapter installed:
+```bash
+pip install psycopg2-binary
 ```
 
 After updating, re-run the migration commands:
