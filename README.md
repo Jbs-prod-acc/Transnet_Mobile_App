@@ -84,14 +84,24 @@ python manage.py migrate
 ```
 
 ## Additional Management Commands
-- To update driver status after leave/emergency:
+- **Auto-update driver status** (runs automatically via middleware on each request):
+  The system automatically checks and updates driver status from 'on_leave' or 'emergency' to 'available' when their leave/emergency period has ended (based on date and time).
+
+- **Manual driver status update** (can be run via cron job or manually):
   ```bash
   python manage.py update_driver_status
   ```
+  This command checks all drivers and updates their status to 'available' if their leave/emergency period has ended.
+
+## Automated Status Updates
+The application includes middleware (`AutoUpdateDriverStatusMiddleware`) that automatically:
+- Checks driver status on every request
+- Updates drivers from 'on_leave' or 'emergency' to 'available' when their `on_leave_until` datetime has passed
+- Ensures real-time status updates without manual intervention
+
+For scheduled/background updates, set up a cron job to run `python manage.py update_driver_status` periodically (e.g., every hour).
 
 ## Notes
 - Static and media files are served automatically in development.
 - For production, configure static/media file serving and use a production-ready database.
 
-## License
-MIT License

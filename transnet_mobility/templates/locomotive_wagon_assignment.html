@@ -40,12 +40,12 @@
     }
     
     .page-header {
-        background: #007bff;
-        color: white;
+        background: #E31937;
+            color: white;
         padding: 30px;
         border-radius: 12px;
         margin-bottom: 30px;
-        box-shadow: 0 4px 12px rgba(0, 123, 255, 0.3);
+        box-shadow: 0 4px 12px rgba(227, 25, 55, 0.3);
     }
     
     .page-header h1 {
@@ -236,13 +236,7 @@
                                 
                                 <span class="text-muted" style="font-size: 1rem; font-weight: 500;">Locomotive Name(s): 
                                     <span style="color: #E31937; font-weight: bold;">
-                                        {% for loco in locomotives_list %}
-                                            {% if loco.id == loco_id %}
-                                                {% for n in loco.names %}
-                                                    <span style="margin-right: 8px;">{{ n }}</span>
-                                                {% endfor %}
-                                            {% endif %}
-                                        {% endfor %}
+                                        {{ summary.name }}
                                     </span>
                                 </span>
                             </div>
@@ -515,7 +509,7 @@
                 <select name="locomotive" id="locomotiveFilter" onchange="this.form.submit()" 
                         style="padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; min-width: 250px;">
                     <option value="">All Locomotives</option>
-                    {% for loco in locomotives_list %}
+                    {% for loco in locomotives_with_assignments %}
                     <option value="{{ loco.id }}" {% if locomotive_filter == loco.id|stringformat:"s" %}selected{% endif %}>
                         {{ loco.display_name }}
                     </option>
@@ -536,11 +530,11 @@
             <table class="assignments-table table">
                 <thead>
                     <tr>
-                        <th><i class="fas fa-train"></i> Locomotive</th>
-                        <th><i class="fas fa-hashtag"></i> Wagon Number</th>
-                        <th><i class="fas fa-cube"></i> Wagon Type</th>
-                        <th><i class="fas fa-balance-scale"></i> Tare Weight</th>
-                        <th><i class="fas fa-weight-hanging"></i> Payload</th>
+                        <th><i class="fas fa-train"></i> Locomotive(s)</th>
+                        <th><i class="fas fa-hashtag"></i> Wagon Numbers</th>
+                        <th><i class="fas fa-cube"></i> Wagon Types</th>
+                        <th><i class="fas fa-balance-scale"></i> Total Tare Weight</th>
+                        <th><i class="fas fa-weight-hanging"></i> Total Payload</th>
                         <th><i class="fas fa-weight"></i> Total Weight</th>
                         <th><i class="fas fa-calendar"></i> Assigned At</th>
                         <th><i class="fas fa-user"></i> Assigned By</th>
@@ -550,94 +544,135 @@
                 <tbody>
                     {% for assignment in assignments %}
                     <tr>
-                        <td><strong>{{ assignment.locomotive_name }}</strong></td>
-                        <td>{{ assignment.wagon_number }}</td>
                         <td>
-                            <span class="badge bg-secondary">{{ assignment.wagon_type }}</span>
+                            <strong>
+                                {% for loco in assignment.locomotive_names %}
+                                    {{ loco.name }}{% if not forloop.last %} + {% endif %}
+                                {% endfor %}
+                            </strong>
                         </td>
-                        <td>{{ assignment.tare_weight|floatformat:2 }}t</td>
-                        <td>{{ assignment.payload_capacity|floatformat:2 }}t</td>
+                        <td>
+                            {% for wagon_num in assignment.wagon_numbers %}
+                                <span class="badge bg-secondary">{{ wagon_num }}</span>{% if not forloop.last %}, {% endif %}
+                            {% endfor %}
+                        </td>
+                        <td>
+                            {% for detail in assignment.wagon_details %}
+                                <span class="badge bg-info">{{ detail.type }}</span>{% if not forloop.last %}, {% endif %}
+                            {% endfor %}
+                        </td>
+                        <td>{{ assignment.total_tare|floatformat:2 }}t</td>
+                        <td>{{ assignment.total_payload|floatformat:2 }}t</td>
                         <td><strong>{{ assignment.total_weight|floatformat:2 }}t</strong></td>
                         <td>{{ assignment.assigned_at|date:"Y-m-d H:i" }}</td>
                         <td>{{ assignment.assigned_by }}</td>
                         <td>
                             <div style="display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;">
-                                <form method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to unassign this wagon?');">
+                                <!-- Unassign buttons for each wagon -->
+                                {% for detail in assignment.wagon_details %}
+                                <form method="post" style="margin: 0;" onsubmit="return confirm('Are you sure you want to unassign wagon {{ detail.number }}?');">
                                     {% csrf_token %}
                                     <input type="hidden" name="action" value="unassign">
-                                    <input type="hidden" name="assignment_id" value="{{ assignment.id }}">
-                                    <button type="submit" class="unassign-btn">
-                                        <i class="fas fa-unlink"></i> Unassign
+                                    <input type="hidden" name="assignment_id" value="{{ detail.assignment_id }}">
+                                    <button type="submit" class="btn btn-sm btn-danger" title="Unassign {{ detail.number }}">
+                                        <i class="fas fa-unlink"></i> {{ detail.number }}
                                     </button>
                                 </form>
-                                                                <!-- Locomotive change modal trigger -->
-                                                                <button type="button" class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#changeLocoModal{{ assignment.id }}">
-                                                                        <i class="fas fa-exchange-alt"></i> Change
-                                                                </button>
-
-                                                                                                                                <!-- Modal for changing locomotive (multi-loco support) -->
-                                                                                                                                <div class="modal fade" id="changeLocoModal{{ assignment.id }}" tabindex="-1" aria-labelledby="changeLocoModalLabel{{ assignment.id }}" aria-hidden="true">
-                                                                                                                                    <div class="modal-dialog modal-dialog-centered">
-                                                                                                                                        <div class="modal-content">
-                                                                                                                                            <div class="modal-header">
-                                                                                                                                                <h5 class="modal-title" id="changeLocoModalLabel{{ assignment.id }}">Change Locomotive Assignment</h5>
-                                                                                                                                                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                                                                                                                                            </div>
-                                                                                                                                            <form method="post">
-                                                                                                                                                <div class="modal-body">
-                                                                                                                                                    {% csrf_token %}
-                                                                                                                                                    <input type="hidden" name="action" value="reassign">
-                                                                                                                                                    <input type="hidden" name="assignment_id" value="{{ assignment.id }}">
-                                                                                                                                                    <div class="table-responsive">
-                                                                                                                                                        <table class="table table-bordered align-middle">
-                                                                                                                                                            <thead>
-                                                                                                                                                                <tr>
-                                                                                                                                                                    <th>Current Locomotive</th>
-                                                                                                                                                                    <th>Replace With</th>
-                                                                                                                                                                </tr>
-                                                                                                                                                            </thead>
-                                                                                                                                                            <tbody>
-                                                                                                                                                                {% for loco in assignment.locomotive_names %}
-                                                                                                                                                                <tr>
-                                                                                                                                                                    <td>
-                                                                                                                                                                        <strong>{{ loco.name }}</strong><br>
-                                                                                                                                                                        <span class="text-muted">Power: {{ loco.power|default:'N/A' }}</span>
-                                                                                                                                                                        <input type="hidden" name="current_loco_ids" value="{{ loco.id }}">
-                                                                                                                                                                    </td>
-                                                                                                                                                                    <td>
-                                                                                                                                                                        <select name="replace_loco_ids_{{ loco.id }}" class="form-select">
-                                                                                                                                                                            <option value="{{ loco.id }}">Keep ({{ loco.name }})</option>
-                                                                                                                                                                            {% for available in assignment.available_locomotives %}
-                                                                                                                                                                                {% if available.id != loco.id %}
-                                                                                                                                                                                    <option value="{{ available.id }}">{{ available.name }} (Power: {{ available.power|default:'N/A' }})</option>
-                                                                                                                                                                                {% endif %}
-                                                                                                                                                                            {% endfor %}
-                                                                                                                                                                        </select>
-                                                                                                                                                                    </td>
-                                                                                                                                                                </tr>
-                                                                                                                                                                {% endfor %}
-                                                                                                                                                            </tbody>
-                                                                                                                                                        </table>
-                                                                                                                                                    </div>
-                                                                                                                                                    <div class="alert alert-info">
-                                                                                                                                                        <strong>Tip:</strong> Only change the dropdown if you want to replace a locomotive. Unchanged rows will keep their current locomotive.
-                                                                                                                                                    </div>
-                                                                                                                                                </div>
-                                                                                                                                                <div class="modal-footer">
-                                                                                                                                                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                                                                                                                                                    <button type="submit" class="btn btn-primary">Confirm Change</button>
-                                                                                                                                                </div>
-                                                                                                                                            </form>
-                                                                                                                                        </div>
-                                                                                                                                    </div>
-                                                                                                                                </div>
-                                <!-- Locomotive remove form -->
-                                <form method="post" style="margin: 0;" onsubmit="return confirm('Remove this locomotive from the assignment?');">
+                                {% endfor %}
+                                
+                                <!-- Change/Reassign Locomotive button -->
+                                <button type="button" class="btn btn-sm btn-success" data-bs-toggle="modal" data-bs-target="#changeLocoModal{{ forloop.counter }}">
+                                    <i class="fas fa-exchange-alt"></i> Change Loco
+                                </button>
+                                
+                                <!-- Modal for changing locomotive -->
+                                <div class="modal fade" id="changeLocoModal{{ forloop.counter }}" tabindex="-1" aria-labelledby="changeLocoModalLabel{{ forloop.counter }}" aria-hidden="true">
+                                    <div class="modal-dialog modal-dialog-centered modal-lg">
+                                        <div class="modal-content">
+                                            <div class="modal-header" style="background: #E31937; color: white;">
+                                                <h5 class="modal-title" id="changeLocoModalLabel{{ forloop.counter }}">
+                                                    <i class="fas fa-exchange-alt"></i> Change Locomotive Assignment
+                                                </h5>
+                                                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                                            </div>
+                                            <form method="post">
+                                                <div class="modal-body">
+                                                    {% csrf_token %}
+                                                    <input type="hidden" name="action" value="reassign_locomotive">
+                                                    
+                                                    <div class="alert alert-info mb-3">
+                                                        <strong><i class="fas fa-info-circle"></i> Info:</strong> Replace individual locomotives in this assignment. Select a new locomotive for each one you want to change.
+                                                    </div>
+                                                    
+                                                    <div class="table-responsive">
+                                                        <table class="table table-bordered align-middle">
+                                                            <thead style="background: #f8f9fa;">
+                                                                <tr>
+                                                                    <th style="width: 45%;">Current Locomotive & Power</th>
+                                                                    <th style="width: 55%;">Replace With (Available Locomotives)</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody>
+                                                                {% for loco in assignment.locomotive_names %}
+                                                                <tr>
+                                                                    <td style="vertical-align: middle;">
+                                                                        <div style="padding: 10px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px;">
+                                                                            <strong style="font-size: 16px; color: #212529;">{{ loco.name }}</strong>
+                                                                            <br>
+                                                                            <small class="text-muted">
+                                                                                <i class="fas fa-bolt text-warning"></i> Tractive Power: 
+                                                                                {% if loco.power and loco.power != 'N/A' %}
+                                                                                    <strong>{{ loco.power }} kN</strong>
+                                                                                {% else %}
+                                                                                    <strong>N/A</strong>
+                                                                                {% endif %}
+                                                                            </small>
+                                                                        </div>
+                                                                        <input type="hidden" name="old_locomotive_ids[]" value="{{ loco.id }}">
+                                                                    </td>
+                                                                    <td style="vertical-align: middle;">
+                                                                        <select name="new_locomotive_id_{{ loco.id }}" class="form-select" style="font-size: 14px;">
+                                                                            <option value="">Keep {{ loco.name }} (No Change)</option>
+                                                                            {% for avail_loco in available_single_locomotives %}
+                                                                                <option value="{{ avail_loco.id }}">
+                                                                                    {{ avail_loco.display_name }}
+                                                                                </option>
+                                                                            {% endfor %}
+                                                                        </select>
+                                                                        <small class="text-muted d-block mt-1">
+                                                                            <i class="fas fa-lightbulb"></i> Only available single locomotives (not assigned)
+                                                                        </small>
+                                                                    </td>
+                                                                </tr>
+                                                                {% endfor %}
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                    
+                                                    <input type="hidden" name="assignment_group_ids" value="{% for detail in assignment.wagon_details %}{{ detail.assignment_id }}{% if not forloop.last %},{% endif %}{% endfor %}">
+                                                </div>
+                                                <div class="modal-footer">
+                                                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                                                        <i class="fas fa-times"></i> Cancel
+                                                    </button>
+                                                    <button type="submit" class="btn btn-primary" style="background: #E31937; border-color: #E31937;">
+                                                        <i class="fas fa-check"></i> Confirm Changes
+                                                    </button>
+                                                </div>
+                                            </form>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Delete entire group button -->
+                                <form method="post" style="margin: 0;" onsubmit="return confirm('Remove all these wagon assignments? This will unassign all wagons in this group.');">
                                     {% csrf_token %}
-                                    <input type="hidden" name="action" value="remove_locomotive">
-                                    <input type="hidden" name="assignment_id" value="{{ assignment.id }}">
-                                    <button type="submit" class="btn btn-sm btn-danger">
-                                        <i class="fas fa-trash-alt"></i> Remove
+                                    <input type="hidden" name="action" value="remove_group">
+                                    {% for detail in assignment.wagon_details %}
+                                    <input type="hidden" name="group_assignment_ids" value="{{ detail.assignment_id }}">
+                                    {% endfor %}
+                                    <button type="submit" class="btn btn-sm btn-warning">
+                                        <i class="fas fa-trash-alt"></i> Delete Group
                                     </button>
                                 </form>
                             </div>

@@ -282,7 +282,6 @@ def fuel_matrics(request):
 
 
 @login_required
-@login_required
 def scheduling_dashboard(request):
     """Render the scheduling dashboard for admins, showing calendar and driver status."""
     context = {}
@@ -4412,9 +4411,20 @@ def driver_assignment(request):
             if assignment_id:
                 try:
                     schedule = Schedule.objects.get(id=assignment_id)
+                    driver_id = schedule.driver_id
+                    loco_ids = list(schedule.locomotives.values_list('id', flat=True))
+                    
+                    # Remove locomotives from schedule
                     schedule.locomotives.clear()
                     schedule.status = 'available'
                     schedule.save()
+                    
+                    # Delete corresponding LocomotiveAssignment records
+                    LocomotiveAssignment.objects.filter(
+                        driver_id=driver_id,
+                        locomotive_id__in=loco_ids
+                    ).delete()
+                    
                     messages.success(request, 'Driver assignment removed successfully.')
                 except Schedule.DoesNotExist:
                     messages.error(request, 'Assignment not found.')
@@ -4453,6 +4463,23 @@ def driver_assignment(request):
                         except CustomUser.DoesNotExist:
                             pass
                     schedule.save()
+                    
+                    # Create LocomotiveAssignment records for each locomotive
+                    for loco_id in locomotive_ids:
+                        try:
+                            loco = LocomotiveSpec.objects.get(id=loco_id)
+                            # Create or update assignment for driver
+                            LocomotiveAssignment.objects.update_or_create(
+                                locomotive=loco,
+                                driver_id=driver_id,
+                                defaults={
+                                    'assistant_id': assistant_id if assistant_id else None,
+                                    'assigned_at': timezone.now()
+                                }
+                            )
+                        except LocomotiveSpec.DoesNotExist:
+                            pass
+                    
                     # Collect driver email and id for notification
                     if schedule.driver and schedule.driver.email:
                         assigned_driver_emails.append(schedule.driver.email)
@@ -4566,57 +4593,8 @@ def locomotive_wagon_assignment(request):
 
     from .models import LocomotiveWagonAssignment
     from django.db.models import Sum
-    # Locomotive Performance Analysis (loco_summaries)
-    loco_summaries = {}
-    assigned_loco_ids = LocomotiveWagonAssignment.objects.values_list('locomotive_id', flat=True).distinct()
-    for loco in LocomotiveSpec.objects.filter(id__in=assigned_loco_ids):
-        assigned_wagons = LocomotiveWagonAssignment.objects.filter(locomotive=loco).select_related('wagon')
-        wagon_count = assigned_wagons.count()
-        total_weight = 0
-        for a in assigned_wagons:
-            w = a.wagon
-            tare = float(w.tare_weight or 0)
-            payload = float(w.payload_capacity or 0)
-            total_weight += tare + payload
-        try:
-            capacity = float(loco.capacity_in_tons) if loco.capacity_in_tons else None
-        except (ValueError, TypeError):
-            capacity = None
-        loco_power_hp = float(getattr(loco, 'tractive_effort', 0)) * 745.7 / 33 if getattr(loco, 'tractive_effort', None) else None
-        tractive_effort = float(getattr(loco, 'tractive_effort', 0)) if getattr(loco, 'tractive_effort', None) else None
-        power_required_flat = total_weight if total_weight else 0
-        power_required_grade = total_weight * 3 if total_weight else 0
-        power_to_weight = (loco_power_hp / total_weight) if (loco_power_hp and total_weight) else None
-        capacity_used_percent = (total_weight / capacity * 100) if (capacity and total_weight) else 0
-        if capacity is not None and total_weight > capacity:
-            can_handle_status = 'critical'
-            can_handle_message = 'Overloaded!'
-        elif capacity is not None and total_weight > 0.9 * capacity:
-            can_handle_status = 'warning'
-            can_handle_message = 'Near limit'
-        elif capacity is not None:
-            can_handle_status = 'optimal'
-            can_handle_message = 'OK'
-        else:
-            can_handle_status = 'unknown'
-            can_handle_message = 'No capacity info'
-        loco_summaries[loco.id] = {
-            'name': loco.locomotive,
-            'wagon_count': wagon_count,
-            'total_weight': total_weight,
-            'capacity': capacity,
-            'capacity_used_percent': capacity_used_percent,
-            'can_handle_status': can_handle_status,
-            'can_handle_message': can_handle_message,
-            'loco_power_hp': loco_power_hp,
-            'tractive_effort': tractive_effort,
-            'power_required_flat': power_required_flat,
-            'power_required_grade': power_required_grade,
-            'power_to_weight': power_to_weight,
-        }
-
-
-    # --- Dropdown and assignment logic ---
+    
+    # --- Dropdown and assignment logic (need this first for pairing info) ---
     today = timezone.now().date()
     # Date filter support
     date_filter = request.GET.get('date', '')
@@ -4642,21 +4620,180 @@ def locomotive_wagon_assignment(request):
         driver_pair_to_loco_names[driver_pair_key].extend(loco_names)
     for pair in driver_pair_to_loco_names:
         driver_pair_to_loco_names[pair] = list(sorted(set(driver_pair_to_loco_names[pair])))
+    
+    # Build locomotive pairs mapping
+    loco_pairs = {}  # Maps individual loco_id to its pair group (frozenset)
+    loco_pair_groups = []  # List of locomotive pair groups
+    for pair_key, loco_ids in driver_pair_to_loco_ids.items():
+        loco_set = frozenset(loco_ids)
+        loco_pair_groups.append(loco_set)
+        for loco_id in loco_ids:
+            loco_pairs[loco_id] = loco_set
+    
+    # Locomotive Performance Analysis (loco_summaries) - Calculate per actual locomotive GROUP
+    loco_summaries = {}
+    assigned_loco_ids = LocomotiveWagonAssignment.objects.values_list('locomotive_id', flat=True).distinct()
+    
+    # Build actual locomotive combinations from wagon assignments
+    # Instead of using schedule pairs, group by which locomotives actually share wagons
+    wagon_to_locos_mapping = defaultdict(set)
+    for assignment in LocomotiveWagonAssignment.objects.select_related('wagon', 'locomotive'):
+        if assignment.wagon and assignment.locomotive:
+            wagon_to_locos_mapping[assignment.wagon.id].add(assignment.locomotive.id)
+    
+    # Find unique locomotive combinations
+    unique_loco_combos = set()
+    for wagon_id, loco_ids in wagon_to_locos_mapping.items():
+        unique_loco_combos.add(frozenset(loco_ids))
+    
+    # Calculate performance for each unique locomotive combination
+    for loco_combo in unique_loco_combos:
+        loco_ids_in_combo = list(loco_combo)
+        locomotives_in_combo = LocomotiveSpec.objects.filter(id__in=loco_ids_in_combo)
+        
+        # Calculate combined metrics for this locomotive combination
+        assigned_wagons = LocomotiveWagonAssignment.objects.filter(
+            locomotive_id__in=loco_ids_in_combo
+        ).select_related('wagon')
+        
+        # Only count wagons that are assigned to THIS EXACT combination
+        wagon_count = 0
+        total_weight = 0
+        counted_wagons = set()
+        
+        for a in assigned_wagons:
+            if a.wagon and a.wagon.id not in counted_wagons:
+                # Check if this wagon belongs to this exact locomotive combination
+                wagon_locos = wagon_to_locos_mapping.get(a.wagon.id, set())
+                if wagon_locos == loco_combo:
+                    counted_wagons.add(a.wagon.id)
+                    wagon_count += 1
+                    w = a.wagon
+                    tare = float(w.tare_weight or 0)
+                    payload = float(w.payload_capacity or 0)
+                    total_weight += tare + payload
+        
+        # Sum capacities and tractive efforts for locomotives in this combination
+        total_capacity = 0
+        total_tractive_effort = 0
+        loco_names = []
+        for loco in locomotives_in_combo:
+            loco_names.append(loco.locomotive)
+            try:
+                capacity = float(loco.capacity_in_tons) if loco.capacity_in_tons else 0
+                total_capacity += capacity
+            except (ValueError, TypeError):
+                pass
+            try:
+                tractive = float(getattr(loco, 'tractive_effort', 0)) if getattr(loco, 'tractive_effort', None) else 0
+                total_tractive_effort += tractive
+            except (ValueError, TypeError):
+                pass
+        
+        capacity = total_capacity if total_capacity > 0 else None
+        loco_power_hp = total_tractive_effort * 745.7 / 33 if total_tractive_effort else None
+        tractive_effort = total_tractive_effort if total_tractive_effort else None
+        power_required_flat = total_weight if total_weight else 0
+        power_required_grade = total_weight * 3 if total_weight else 0
+        power_to_weight = (loco_power_hp / total_weight) if (loco_power_hp and total_weight) else None
+        capacity_used_percent = (total_weight / capacity * 100) if (capacity and total_weight) else 0
+        
+        if capacity is not None and total_weight > capacity:
+            can_handle_status = 'critical'
+            can_handle_message = 'Overloaded!'
+        elif capacity is not None and total_weight > 0.9 * capacity:
+            can_handle_status = 'warning'
+            can_handle_message = 'Near limit'
+        elif capacity is not None:
+            can_handle_status = 'optimal'
+            can_handle_message = 'OK'
+        else:
+            can_handle_status = 'unknown'
+            can_handle_message = 'No capacity info'
+        
+        # Use the first loco ID as the key (for template compatibility)
+        summary_key = loco_ids_in_combo[0] if loco_ids_in_combo else 0
+        loco_summaries[summary_key] = {
+            'name': ', '.join(sorted(loco_names)),  # Combined names for locomotive combination
+            'loco_ids': loco_ids_in_combo,  # All locomotive IDs in this combination
+            'wagon_count': wagon_count,
+            'total_weight': total_weight,
+            'capacity': capacity,
+            'capacity_used_percent': capacity_used_percent,
+            'can_handle_status': can_handle_status,
+            'can_handle_message': can_handle_message,
+            'loco_power_hp': loco_power_hp,
+            'tractive_effort': tractive_effort,
+            'power_required_flat': power_required_flat,
+            'power_required_grade': power_required_grade,
+            'power_to_weight': power_to_weight,
+        }
+    
+    # Build locomotives list for dropdown - show all locomotive pair instances with date and driver info
     locomotives = []
-    for pair, loco_ids in driver_pair_to_loco_ids.items():
-        locos = LocomotiveSpec.objects.filter(id__in=loco_ids)
-        names = [l.locomotive for l in locos if l.locomotive]
-        ids = [l.id for l in locos]
-        if not ids:
-            continue
-        display_name = ', '.join(names)
-        locomotives.append({'id': ids[0], 'display_name': display_name, 'names': names})
+    
+    for sched in schedules:
+        # Get locomotive IDs and names from this specific schedule
+        loco_ids = list(sched.locomotives.values_list('id', flat=True))
+        loco_names = []
+        locos_in_sched = sched.locomotives.order_by('locomotive')
+        for loco in locos_in_sched:
+            if loco.locomotive:
+                loco_names.append(loco.locomotive)
+        
+        if loco_names:
+            # Build display name with date and driver info
+            driver_name = sched.driver.get_full_name() if sched.driver else 'Unknown'
+            assistant_name = sched.assistant.get_full_name() if sched.assistant else 'N/A'
+            date_str = sched.date.strftime('%Y-%m-%d')
+            
+            display_name = f"{' + '.join(sorted(loco_names))} (Date: {date_str}, Driver: {driver_name}, Assistant: {assistant_name})"
+            
+            locomotives.append({
+                'id': loco_ids[0] if loco_ids else '',  # Use first loco ID for filtering
+                'display_name': display_name,
+                'names': loco_names,
+                'loco_ids': loco_ids,
+                'schedule_id': sched.id,
+                'date': sched.date,
+                'driver': driver_name,
+                'assistant': assistant_name
+            })
 
     wagons = WagonSpec.objects.filter(
         is_active=True,
         status='AVAILABLE',
         is_assigned=False
     ).order_by('wagon_number')
+
+    # Build list of available single locomotives (not assigned to drivers or wagons)
+    # Get all locomotive IDs that are assigned to drivers (from schedules)
+    assigned_to_drivers = set()
+    for sched in schedules:
+        assigned_to_drivers.update(sched.locomotives.values_list('id', flat=True))
+    
+    # Get all locomotive IDs that are assigned to wagons
+    assigned_to_wagons = set(LocomotiveWagonAssignment.objects.values_list('locomotive_id', flat=True).distinct())
+    
+    # Get available single locomotives (not assigned to drivers or wagons)
+    excluded_loco_ids = assigned_to_drivers.union(assigned_to_wagons)
+    available_single_locomotives = []
+    
+    for loco in LocomotiveSpec.objects.filter(is_active=True).exclude(id__in=excluded_loco_ids).order_by('locomotive'):
+        if loco.locomotive:
+            # Get tractive power
+            tractive_power = 'N/A'
+            if hasattr(loco, 'tractive_effort_kn') and loco.tractive_effort_kn:
+                tractive_power = f"{loco.tractive_effort_kn} kN"
+            elif hasattr(loco, 'tractive_effort') and loco.tractive_effort:
+                tractive_power = f"{loco.tractive_effort} kN"
+            
+            available_single_locomotives.append({
+                'id': loco.id,
+                'name': loco.locomotive,
+                'display_name': f"{loco.locomotive} (Power: {tractive_power})",
+                'power': tractive_power
+            })
 
     # Handle POST requests
     if request.method == 'POST':
@@ -4753,39 +4890,250 @@ def locomotive_wagon_assignment(request):
                     messages.error(request, 'Failed to unassign wagon')
             return redirect('locomotive_wagon_assignment')
         elif action == 'reassign':
-            assignment_id = request.POST.get('assignment_id')
-            new_locomotive_id = request.POST.get('new_locomotive_id')
-            if assignment_id and new_locomotive_id:
+            assignment_ids = request.POST.getlist('assignment_ids')
+            if assignment_ids:
                 try:
-                    assignment = LocomotiveWagonAssignment.objects.get(id=int(assignment_id))
-                    new_loco = LocomotiveSpec.objects.get(id=int(new_locomotive_id))
-                    assignment.locomotive = new_loco
-                    assignment.save()
-                    messages.success(request, f'Locomotive changed for wagon {assignment.wagon.wagon_number}.')
+                    reassigned_count = 0
+                    for assignment_id in assignment_ids:
+                        new_loco_id = request.POST.get(f'new_locomotive_id_{assignment_id}')
+                        if new_loco_id:
+                            assignment = LocomotiveWagonAssignment.objects.get(id=int(assignment_id))
+                            new_loco = LocomotiveSpec.objects.get(id=int(new_loco_id))
+                            old_loco_name = assignment.locomotive.locomotive if assignment.locomotive else 'Unknown'
+                            assignment.locomotive = new_loco
+                            assignment.save()
+                            reassigned_count += 1
+                    if reassigned_count > 0:
+                        messages.success(request, f'Successfully reassigned {reassigned_count} wagon(s) to new locomotive(s).')
+                    else:
+                        messages.warning(request, 'No wagons were reassigned. Please select a new locomotive.')
                 except Exception as e:
                     messages.error(request, f'Failed to change locomotive: {e}')
             else:
-                messages.error(request, 'Missing assignment or locomotive selection.')
+                messages.error(request, 'Missing assignment selection.')
+            return redirect('locomotive_wagon_assignment')
+        elif action == 'reassign_locomotive':
+            # New action: Replace individual locomotives in a locomotive pair/group
+            old_locomotive_ids = request.POST.getlist('old_locomotive_ids[]')
+            assignment_group_ids_str = request.POST.get('assignment_group_ids', '')
+            assignment_group_ids = [aid.strip() for aid in assignment_group_ids_str.split(',') if aid.strip()]
+            
+            if old_locomotive_ids and assignment_group_ids:
+                try:
+                    changes_made = []
+                    
+                    for old_loco_id in old_locomotive_ids:
+                        new_loco_id = request.POST.get(f'new_locomotive_id_{old_loco_id}')
+                        
+                        # Skip if no new locomotive selected (user wants to keep the current one)
+                        if not new_loco_id:
+                            continue
+                        
+                        old_loco = LocomotiveSpec.objects.get(id=int(old_loco_id))
+                        new_loco = LocomotiveSpec.objects.get(id=int(new_loco_id))
+                        
+                        # Find all wagon assignments for this specific old locomotive
+                        updated_count = 0
+                        for assignment_id in assignment_group_ids:
+                            try:
+                                assignment = LocomotiveWagonAssignment.objects.get(
+                                    id=int(assignment_id),
+                                    locomotive_id=int(old_loco_id)
+                                )
+                                assignment.locomotive = new_loco
+                                assignment.assigned_by = request.user
+                                assignment.save()
+                                updated_count += 1
+                            except LocomotiveWagonAssignment.DoesNotExist:
+                                continue
+                        
+                        if updated_count > 0:
+                            changes_made.append(f'{old_loco.locomotive} → {new_loco.locomotive} ({updated_count} wagon(s))')
+                    
+                    if changes_made:
+                        messages.success(request, f'Successfully changed locomotives: {", ".join(changes_made)}')
+                    else:
+                        messages.info(request, 'No changes were made. Select new locomotives to replace the current ones.')
+                        
+                except Exception as e:
+                    logging.exception('Failed to reassign locomotives')
+                    messages.error(request, f'Failed to change locomotives: {str(e)}')
+            else:
+                messages.error(request, 'Missing locomotive selection data.')
+            return redirect('locomotive_wagon_assignment')
+        elif action == 'remove_group':
+            group_assignment_ids = request.POST.getlist('group_assignment_ids')
+            if group_assignment_ids:
+                try:
+                    deleted_count = 0
+                    wagon_numbers = []
+                    for assignment_id in group_assignment_ids:
+                        assignment = LocomotiveWagonAssignment.objects.get(id=int(assignment_id))
+                        wagon_numbers.append(assignment.wagon.wagon_number)
+                        wagon_id = assignment.wagon.id
+                        assignment.delete()
+                        # Update wagon status
+                        wagon = WagonSpec.objects.get(id=wagon_id)
+                        wagon.is_assigned = False
+                        wagon.status = 'AVAILABLE'
+                        wagon.is_active = True
+                        wagon.save()
+                        deleted_count += 1
+                    messages.success(request, f'Deleted {deleted_count} wagon assignment(s): {", ".join(wagon_numbers)}')
+                except Exception as e:
+                    messages.error(request, f'Failed to remove group: {e}')
+            else:
+                messages.error(request, 'No assignments selected for removal.')
             return redirect('locomotive_wagon_assignment')
 
 
 
-    # --- Flat assignment list for table (classic version) ---
+    # Get locomotive filter from GET parameters
+    locomotive_filter = request.GET.get('locomotive', '')
+    
+    # --- Group assignments by actual locomotive combinations ---
+    # Instead of using schedule pairs, group by which locomotives actually share wagons
     assignments_qs = LocomotiveWagonAssignment.objects.select_related('locomotive', 'wagon', 'assigned_by').order_by('-assigned_at')
-    assignment_list = []
+    
+    # Build wagon-to-locomotives mapping
+    wagon_to_locos = defaultdict(set)
     for assignment in assignments_qs:
+        if assignment.wagon and assignment.locomotive:
+            wagon_to_locos[assignment.wagon.id].add(assignment.locomotive.id)
+    
+    # Group assignments by unique locomotive combinations
+    loco_combo_assignments = defaultdict(list)
+    processed_wagons = set()
+    
+    for assignment in assignments_qs:
+        if not assignment.wagon or not assignment.locomotive:
+            continue
+            
+        wagon_id = assignment.wagon.id
+        
+        # Skip if we've already processed this wagon
+        if wagon_id in processed_wagons:
+            continue
+        
+        # Get all locomotives assigned to this wagon
+        loco_combo = frozenset(wagon_to_locos[wagon_id])
+        
+        # Apply filter if provided
+        if locomotive_filter:
+            try:
+                filter_id = int(locomotive_filter)
+                if filter_id not in loco_combo:
+                    processed_wagons.add(wagon_id)
+                    continue
+            except (ValueError, TypeError):
+                pass
+        
+        # Get all assignments with this exact locomotive combination
+        for other_assignment in assignments_qs:
+            if other_assignment.wagon and other_assignment.locomotive:
+                other_wagon_id = other_assignment.wagon.id
+                other_loco_combo = frozenset(wagon_to_locos[other_wagon_id])
+                
+                if other_loco_combo == loco_combo and other_wagon_id not in processed_wagons:
+                    loco_combo_assignments[loco_combo].append(other_assignment)
+                    processed_wagons.add(other_wagon_id)
+    
+    # Build grouped assignment list for template
+    assignment_list = []
+    for loco_combo, assignments in loco_combo_assignments.items():
+        if not assignments:
+            continue
+            
+        # Get all locomotive names in this combination
+        loco_ids = list(loco_combo)
+        locomotives_in_group = LocomotiveSpec.objects.filter(id__in=loco_ids).order_by('locomotive')
+        loco_names = [l.locomotive for l in locomotives_in_group if l.locomotive]
+        
+        # Get all wagon details for this group (remove duplicates)
+        wagon_numbers = []
+        wagon_details = []
+        seen_wagons = set()
+        total_tare = 0
+        total_payload = 0
+        
+        for assignment in assignments:
+            if assignment.wagon and assignment.wagon.id not in seen_wagons:
+                seen_wagons.add(assignment.wagon.id)
+                wagon_numbers.append(assignment.wagon.wagon_number)
+                tare = float(assignment.wagon.tare_weight or 0)
+                payload = float(assignment.wagon.payload_capacity or 0)
+                total_tare += tare
+                total_payload += payload
+                
+                wagon_details.append({
+                    'number': assignment.wagon.wagon_number,
+                    'type': assignment.wagon.wagon_type,
+                    'tare': tare,
+                    'payload': payload,
+                    'assignment_id': assignment.id,
+                })
+        
+        # Get available locomotives for changing
+        available_locos = []
+        for loco in LocomotiveSpec.objects.filter(is_active=True):
+            available_locos.append({
+                'id': loco.id,
+                'name': loco.locomotive,
+                'power': loco.tractive_effort_kn if hasattr(loco, 'tractive_effort_kn') else 'N/A'
+            })
+        
+        locomotive_names_list = []
+        for loco in locomotives_in_group:
+            locomotive_names_list.append({
+                'id': loco.id,
+                'name': loco.locomotive,
+                'power': loco.tractive_effort_kn if hasattr(loco, 'tractive_effort_kn') else 'N/A'
+            })
+        
         assignment_list.append({
-            'locomotive_id': assignment.locomotive.id if assignment.locomotive else None,
-            'locomotive_name': assignment.locomotive.locomotive if assignment.locomotive else '',
-            'wagon_number': assignment.wagon.wagon_number if assignment.wagon else '',
-            'wagon_type': assignment.wagon.wagon_type if assignment.wagon else '',
-            'tare_weight': float(assignment.wagon.tare_weight or 0) if assignment.wagon else 0,
-            'payload_capacity': float(assignment.wagon.payload_capacity or 0) if assignment.wagon else 0,
-            'total_weight': (float(assignment.wagon.tare_weight or 0) + float(assignment.wagon.payload_capacity or 0)) if assignment.wagon else 0,
-            'assigned_at': assignment.assigned_at,
-            'assigned_by': assignment.assigned_by.username if assignment.assigned_by else '',
-            'assignment_id': assignment.id,
+            'locomotive_ids': loco_ids,
+            'locomotive_name': ', '.join(loco_names),  # Display all locomotive names
+            'locomotive_names': locomotive_names_list,
+            'wagon_numbers': wagon_numbers,
+            'wagon_count': len(wagon_numbers),
+            'wagon_details': wagon_details,
+            'total_tare': total_tare,
+            'total_payload': total_payload,
+            'total_weight': total_tare + total_payload,
+            'assigned_at': assignments[0].assigned_at if assignments else None,
+            'assigned_by': assignments[0].assigned_by.username if assignments and assignments[0].assigned_by else '',
+            'available_locomotives': available_locos,
+            'assignments': assignments,  # Keep original assignments for detailed operations
         })
+
+    # Create grouped_assignments dictionary for template
+    # Simply convert assignment_list to a dictionary format for the template
+    grouped_assignments = {}
+    for idx, item in enumerate(assignment_list):
+        # Use locomotive combination as key (tuple of sorted IDs)
+        loco_key = tuple(sorted(item['locomotive_ids']))
+        
+        # Build assignments list with all wagon details
+        assignments_for_group = []
+        for wagon in item['wagon_details']:
+            assignments_for_group.append({
+                'locomotive_name': item['locomotive_name'],
+                'wagon_number': wagon['number'],
+                'wagon_type': wagon['type'],
+                'tare': wagon['tare'],
+                'payload': wagon['payload'],
+                'assignment_id': wagon['assignment_id'],
+                'assigned_at': item['assigned_at'],
+                'assigned_by': item['assigned_by'],
+            })
+        
+        grouped_assignments[loco_key] = {
+            'assignments': assignments_for_group,
+            'locomotive_ids': item['locomotive_ids'],
+            'total_tare': item['total_tare'],
+            'total_payload': item['total_payload'],
+            'total_weight': item['total_weight'],
+        }
 
     available_wagons = WagonSpec.objects.filter(is_active=True, status='AVAILABLE', is_assigned=False)
     all_wagons = WagonSpec.objects.all()
@@ -4843,7 +5191,7 @@ def locomotive_wagon_assignment(request):
     sort_by = ''
     start_date = None
     end_date = None
-    locomotive_filter = request.GET.get('locomotive', '')
+    # locomotive_filter already defined earlier in the function
     critical_count = sum(1 for m in maintenance_list if m.urgency_level == 'CRITICAL')
     high_count = sum(1 for m in maintenance_list if m.urgency_level == 'HIGH')
     assignments_by_wagon = defaultdict(list)
@@ -4854,6 +5202,44 @@ def locomotive_wagon_assignment(request):
         })
     for wagon in in_use_wagons:
         wagon.assignments = assignments_by_wagon.get(wagon.id, [])
+
+    # Build locomotives_with_assignments list - show all schedule instances that have wagon assignments
+    locomotives_with_assignments = []
+    assigned_loco_ids_set = set(LocomotiveWagonAssignment.objects.values_list('locomotive_id', flat=True).distinct())
+    
+    for sched in schedules:
+        # Get locomotive IDs from this specific schedule
+        loco_ids = list(sched.locomotives.values_list('id', flat=True))
+        
+        # Check if any locomotive in this schedule has wagon assignments
+        has_assignments = any(loco_id in assigned_loco_ids_set for loco_id in loco_ids)
+        
+        if has_assignments:
+            # Get locomotive names for this schedule
+            loco_names = []
+            locos_in_sched = sched.locomotives.order_by('locomotive')
+            for loco in locos_in_sched:
+                if loco.locomotive:
+                    loco_names.append(loco.locomotive)
+            
+            if loco_names:
+                # Build display name with date and driver info
+                driver_name = sched.driver.get_full_name() if sched.driver else 'Unknown'
+                assistant_name = sched.assistant.get_full_name() if sched.assistant else 'N/A'
+                date_str = sched.date.strftime('%Y-%m-%d')
+                
+                display_name = f"{' + '.join(sorted(loco_names))} (Date: {date_str}, Driver: {driver_name}, Assistant: {assistant_name})"
+                
+                locomotives_with_assignments.append({
+                    'id': loco_ids[0] if loco_ids else '',  # Use first loco ID for filtering
+                    'display_name': display_name,
+                    'names': loco_names,
+                    'loco_ids': loco_ids,
+                    'schedule_id': sched.id,
+                    'date': sched.date,
+                    'driver': driver_name,
+                    'assistant': assistant_name
+                })
 
     context = {
         'Account_type': account_type,
@@ -4878,8 +5264,12 @@ def locomotive_wagon_assignment(request):
         'high_count': high_count,
         'locomotive_filter': locomotive_filter,
         'wagons': wagons,
-        'locomotives_list': locomotives,  # Only use this for the dropdown
+        'locomotives_list': locomotives,  # All locomotives with drivers for assignment dropdown
+        'locomotives_with_assignments': locomotives_with_assignments,  # Only locomotives with wagon assignments for filter
+        'available_single_locomotives': available_single_locomotives,  # Single locomotives not assigned to drivers or wagons
         'assignment_list': assignment_list,  # Flat assignment list for table display
+        'assignments': assignment_list,  # Alias for template compatibility
+        'group_assignments': grouped_assignments,  # Grouped assignments by locomotive combination
 
         'loco_summaries': loco_summaries,
         'date_filter': date_filter,

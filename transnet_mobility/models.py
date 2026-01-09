@@ -55,8 +55,8 @@ class CustomUserManager(BaseUserManager):
         return self.create_user(email, password, **extra_fields)
 # --- Custom User ---
 class CustomUser(AbstractUser):
-    # Date when user should return from leave (auto-reset to available)
-    on_leave_until = models.DateField(blank=True, null=True, help_text="Date when user should return from leave (auto-reset to available)")
+    # Date and time when user should return from leave (auto-reset to available)
+    on_leave_until = models.DateTimeField(blank=True, null=True, help_text="Date and time when user should return from leave (auto-reset to available)")
     User_id = models.CharField(max_length=255, primary_key=True, default=generate_uuid)
     username = None  # ✅ disable username
     email = models.EmailField(unique=True, blank=False, null=False)  # ✅ email required & unique
@@ -124,6 +124,12 @@ class CustomUser(AbstractUser):
     REQUIRED_FIELDS = []   # we don’t need extra required fields since email is unique
 
     objects = CustomUserManager()
+
+    def save(self, *args, **kwargs):
+        # Auto-sync role with account_type for consistency
+        if self.account_type and self.account_type != 'OTHER':
+            self.role = self.account_type
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.email

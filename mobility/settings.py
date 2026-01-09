@@ -55,6 +55,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'transnet_mobility.middleware.AutoUpdateDriverStatusMiddleware',  # Auto-update driver status
 ]
 
 ROOT_URLCONF = 'mobility.urls'
