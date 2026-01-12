@@ -73,68 +73,9 @@
     
     .wagons-table-container {
         margin-top: 20px;
-            <table class="assignments-table table">
-                <thead>
-                    <tr>
-                        <th><i class="fas fa-train"></i> Locomotive(s)</th>
-                        <th><i class="fas fa-hashtag"></i> Assigned Wagons</th>
-                        <th><i class="fas fa-balance-scale"></i> Total Tare Weight</th>
-                        <th><i class="fas fa-weight-hanging"></i> Total Payload</th>
-                        <th><i class="fas fa-weight"></i> Total Weight</th>
-                        <th><i class="fas fa-calendar"></i> Assigned At</th>
-                        <th><i class="fas fa-user"></i> Assigned By</th>
-                        <th><i class="fas fa-cog"></i> Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for group_key, group in group_assignments.items %}
-                    <tr>
-                        <td>
-                            <strong>
-                                {% if group.assignments|length > 0 %}
-                                    {{ group.assignments.0.locomotive_name }}
-                                {% else %}
-                                    &mdash;
-                                {% endif %}
-                            </strong>
-                        </td>
-                        <td>
-                            {% for assignment in group.assignments %}
-                                <span class="badge bg-secondary">{{ assignment.wagon_number }}</span>{% if not forloop.last %}, {% endif %}
-                            {% endfor %}
-                        </td>
-                        <td>
-                            {{ group.total_tare|floatformat:2 }}t
-                        </td>
-                        <td>
-                            {{ group.total_payload|floatformat:2 }}t
-                        </td>
-                        <td>
-                            {{ group.total_weight|floatformat:2 }}t
-                        </td>
-                        <td>
-                            {% if group.assignments|length > 0 %}{{ group.assignments.0.assigned_at|date:"Y-m-d H:i" }}{% endif %}
-                        </td>
-                        <td>
-                            {% if group.assignments|length > 0 %}{{ group.assignments.0.assigned_by }}{% endif %}
-                        </td>
-                        <td>
-                            <div style="display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;">
-                                <!-- Actions for this group (e.g., change, remove, etc.) -->
-                            </div>
-                        </td>
-                    </tr>
-                    {% empty %}
-                    <tr>
-                        <td colspan="8">
-                            <div class="empty-state">
-                                No assignments found.
-                            </div>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+    }
+    
+    .info-tooltip-icon {
         display: inline-block;
         position: relative;
     }

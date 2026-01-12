@@ -10,12 +10,69 @@ A Django-based logistics and scheduling platform for managing locomotives, wagon
 - Admin dashboard with analytics
 
 ## Prerequisites
+
+### Option 1: Docker (Recommended)
+- Docker Desktop (Windows/Mac) or Docker Engine (Linux)
+- Docker Compose
+
+### Option 2: Local Setup
 - Python 3.8+
 - pip (Python package manager)
 - (Recommended) Virtual environment tool: `venv` or `virtualenv`
 - PostgreSQL 12+ (with database created and credentials ready)
 
-## Setup Instructions
+## Quick Start with Docker 🐳
+
+### 1. Clone the Repository
+```bash
+git clone <your-repo-url>
+cd Trans_mobility_app
+```
+
+### 2. Build and Run with Docker Compose
+```bash
+docker-compose up --build
+```
+
+This single command will:
+- Build the Docker image for the Django application
+- Start a PostgreSQL database container
+- Run database migrations automatically
+- Start the development server
+
+The app will be available at http://localhost:8000/
+
+### 3. Create a Superuser (Admin)
+Open a new terminal and run:
+```bash
+docker-compose exec web python manage.py createsuperuser
+```
+
+### 4. Stop the Application
+```bash
+docker-compose down
+```
+
+### 5. Stop and Remove All Data (including database)
+```bash
+docker-compose down -v
+```
+
+## Docker Commands Reference
+
+| Command | Description |
+|---------|-------------|
+| `docker-compose up` | Start the application |
+| `docker-compose up --build` | Rebuild and start the application |
+| `docker-compose up -d` | Start in detached mode (background) |
+| `docker-compose down` | Stop the application |
+| `docker-compose down -v` | Stop and remove volumes (database data) |
+| `docker-compose logs web` | View web application logs |
+| `docker-compose logs db` | View database logs |
+| `docker-compose exec web bash` | Access web container shell |
+| `docker-compose exec web python manage.py <command>` | Run Django management commands |
+
+## Local Setup Instructions (Without Docker)
 
 ### 1. Clone the Repository
 ```bash
